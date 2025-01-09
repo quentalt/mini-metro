@@ -12,13 +12,13 @@ const Sketch: React.FC = () => {
   const trains: Train[] = [];
   const TRAIN_SPEED = 0.005;
   const MAX_PASSENGERS = 8;
-  const DAY_DURATION = 1000; // 1 second per day
+  const DAY_DURATION = 1000;
   const STATION_COLORS = {
     circle: '#FF6B6B',
     square: '#4ECDC4',
     triangle: '#45B7D1'
   };
-  
+
   const gameState: GameState = {
     score: 0,
     gameOver: false,
@@ -30,12 +30,6 @@ const Sketch: React.FC = () => {
   const sketch = (p: p5) => {
     let bgPattern: p5.Graphics;
 
-    p.setup = () => {
-      p.createCanvas(800, 600);
-      setupInitialStations();
-      createBackgroundPattern();
-    };
-
     const createBackgroundPattern = () => {
       bgPattern = p.createGraphics(40, 40);
       bgPattern.background(240);
@@ -45,12 +39,53 @@ const Sketch: React.FC = () => {
       bgPattern.line(40, 0, 0, 40);
     };
 
+    const calculateControlPoints = (start: Station, end: Station): {x: number, y: number}[] => {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+
+      // Determine if the line should be primarily horizontal or vertical
+      const isHorizontal = Math.abs(dx) > Math.abs(dy);
+
+      // Calculate the intermediate point for the angled line
+      let intermediateX: number;
+      let intermediateY: number;
+
+      if (isHorizontal) {
+        // Move horizontally first, then vertically
+        intermediateX = start.x + dx * 0.8;
+        intermediateY = start.y;
+      } else {
+        // Move vertically first, then horizontally
+        intermediateX = start.x;
+        intermediateY = start.y + dy * 0.8;
+      }
+
+      return [
+        { x: intermediateX, y: intermediateY },
+        { x: intermediateX, y: intermediateY }
+      ];
+    };
+
+    const drawAngledLine = (start: Station, end: Station, controlPoints: {x: number, y: number}[]) => {
+      p.beginShape();
+      p.vertex(start.x, start.y);
+      p.vertex(controlPoints[0].x, controlPoints[0].y);
+      p.vertex(end.x, end.y);
+      p.endShape();
+    };
+
+    p.setup = () => {
+      p.createCanvas(800, 600);
+      createBackgroundPattern();
+      setupInitialStations();
+    };
+
     const setupInitialStations = () => {
       const centerX = p.width / 2;
       const centerY = p.height / 2;
       const radius = 150;
       const types: Array<Station['type']> = ['circle', 'square', 'triangle'];
-      
+
       for (let i = 0; i < 5; i++) {
         const angle = (i / 5) * p.TWO_PI;
         stations.push({
@@ -62,19 +97,223 @@ const Sketch: React.FC = () => {
       }
     };
 
-    const lerp = (start: number, end: number, amt: number) => {
-      return (1 - amt) * start + amt * end;
+    p.draw = () => {
+      // Draw background
+      p.background(240);
+
+      // Only draw pattern if it's initialized
+      if (bgPattern) {
+        for (let x = 0; x < p.width; x += 40) {
+          for (let y = 0; y < p.height; y += 40) {
+            p.image(bgPattern, x, y);
+          }
+        }
+      }
+
+      updateGameState();
+      updateTrains();
+
+      // Draw lines with angled segments
+      lines.forEach(line => {
+        if (!line.controlPoints) {
+          line.controlPoints = [];
+          for (let i = 0; i < line.stations.length - 1; i++) {
+            const points = calculateControlPoints(line.stations[i], line.stations[i + 1]);
+            line.controlPoints.push(...points);
+          }
+        }
+
+        // Draw glow
+        p.noFill();
+        p.stroke(p.color(line.color + '80'));
+        p.strokeWeight(8);
+        for (let i = 0; i < line.stations.length - 1; i++) {
+          const current = line.stations[i];
+          const next = line.stations[i + 1];
+          const controlPointIndex = i * 2;
+          drawAngledLine(
+              current,
+              next,
+              line.controlPoints.slice(controlPointIndex, controlPointIndex + 2)
+          );
+        }
+
+        // Draw main line
+        p.stroke(line.color);
+        p.strokeWeight(4);
+        for (let i = 0; i < line.stations.length - 1; i++) {
+          const current = line.stations[i];
+          const next = line.stations[i + 1];
+          const controlPointIndex = i * 2;
+          drawAngledLine(
+              current,
+              next,
+              line.controlPoints.slice(controlPointIndex, controlPointIndex + 2)
+          );
+        }
+      });
+
+      // Update train positions along angled paths
+      trains.forEach(train => {
+        const line = lines[train.lineIndex];
+        if (!line || line.stations.length < 2) return;
+
+        const segmentLength = 1 / (line.stations.length - 1);
+        const currentSegment = Math.floor(train.position / segmentLength);
+        const segmentPosition = (train.position % segmentLength) / segmentLength;
+
+        const start = line.stations[currentSegment];
+        const end = line.stations[currentSegment + 1];
+
+        if (start && end && line.controlPoints) {
+          const controlPointIndex = currentSegment * 2;
+          const intermediatePoint = line.controlPoints[controlPointIndex];
+
+          let x, y, angle;
+
+          if (segmentPosition < 0.5) {
+            // First half of the segment (start to intermediate)
+            const t = segmentPosition * 2;
+            x = p.lerp(start.x, intermediatePoint.x, t);
+            y = p.lerp(start.y, intermediatePoint.y, t);
+            angle = Math.atan2(intermediatePoint.y - start.y, intermediatePoint.x - start.x);
+          } else {
+            // Second half of the segment (intermediate to end)
+            const t = (segmentPosition - 0.5) * 2;
+            x = p.lerp(intermediatePoint.x, end.x, t);
+            y = p.lerp(intermediatePoint.y, end.y, t);
+            angle = Math.atan2(end.y - intermediatePoint.y, end.x - intermediatePoint.x);
+          }
+
+          // Draw train with rotation
+          p.push();
+          p.translate(x, y);
+          p.rotate(angle);
+
+          // Draw train shadow
+          p.noStroke();
+          p.fill(0, 30);
+          p.ellipse(2, 4, 24, 10);
+
+          // Draw train body
+          p.fill(line.color);
+          p.stroke(p.color(p.red(p.color(line.color)) * 0.8,
+              p.green(p.color(line.color)) * 0.8,
+              p.blue(p.color(line.color)) * 0.8));
+          p.strokeWeight(1);
+          p.rect(-10, -7, 20, 14, 4);
+
+          // Draw passengers
+          if (train.passengers.length > 0) {
+            p.noStroke();
+            const passengerWidth = 16 / train.capacity;
+            train.passengers.forEach((type, i) => {
+              p.fill(STATION_COLORS[type]);
+              p.rect(-8 + i * passengerWidth, -5, passengerWidth - 1, 4, 1);
+            });
+          }
+
+          p.pop();
+
+          // Draw delivery effect
+          if (train.showDeliveryEffect) {
+            p.noFill();
+            p.stroke(255, 215, 0);
+            p.strokeWeight(2);
+            const effectSize = 30 + p.sin(p.frameCount * 0.2) * 10;
+            p.circle(x, y, effectSize);
+            p.circle(x, y, effectSize * 0.7);
+          }
+        }
+      });
+
+      // Draw stations
+      stations.forEach(station => {
+        // Draw warning for nearly full stations
+        if (station.passengers >= MAX_PASSENGERS - 2) {
+          p.noFill();
+          p.stroke(255, 0, 0, 128 + p.sin(p.frameCount * 0.1) * 128);
+          p.strokeWeight(2);
+          const warningSize = 40 + p.sin(p.frameCount * 0.1) * 5;
+          p.circle(station.x, station.y, warningSize);
+          p.circle(station.x, station.y, warningSize * 0.7);
+        }
+
+        // Draw station shadow
+        p.noStroke();
+        p.fill(0, 30);
+        p.ellipse(station.x + 2, station.y + 4, 34, 12);
+
+        // Draw station
+        p.strokeWeight(2);
+        p.stroke(40);
+        p.fill(255);
+
+        switch (station.type) {
+          case 'circle':
+            p.circle(station.x, station.y, 30);
+            break;
+          case 'square':
+            p.rectMode(p.CENTER);
+            p.square(station.x, station.y, 30);
+            break;
+          case 'triangle':
+            p.triangle(
+                station.x, station.y - 15,
+                station.x - 15, station.y + 15,
+                station.x + 15, station.y + 15
+            );
+            break;
+        }
+
+        // Draw station type indicator
+        p.noStroke();
+        p.fill(STATION_COLORS[station.type]);
+        switch (station.type) {
+          case 'circle':
+            p.circle(station.x, station.y, 10);
+            break;
+          case 'square':
+            p.rectMode(p.CENTER);
+            p.square(station.x, station.y, 10);
+            break;
+          case 'triangle':
+            p.triangle(
+                station.x, station.y - 5,
+                station.x - 5, station.y + 5,
+                station.x + 5, station.y + 5
+            );
+            break;
+        }
+
+        // Draw passenger count
+        if (station.passengers > 0) {
+          const fillColor = station.passengers >= MAX_PASSENGERS - 2 ?
+              p.color(255, 0, 0) : p.color(40);
+          p.fill(255);
+          p.stroke(40);
+          p.strokeWeight(1);
+          p.circle(station.x + 15, station.y - 15, 20);
+          p.noStroke();
+          p.fill(fillColor);
+          p.textAlign(p.CENTER, p.CENTER);
+          p.textSize(12);
+          p.text(station.passengers.toString(), station.x + 15, station.y - 15);
+        }
+      });
+
+      drawGameInfo();
     };
 
     const updateGameState = () => {
       if (gameState.gameOver) return;
 
       gameState.timeUntilNextDay -= p.deltaTime;
-      
+
       if (gameState.timeUntilNextDay <= 0) {
         gameState.day++;
         gameState.timeUntilNextDay = DAY_DURATION;
-        
+
         if (gameState.day % 5 === 0) {
           const angle = p.random(p.TWO_PI);
           const radius = 200 + p.random(100);
@@ -119,7 +358,7 @@ const Sketch: React.FC = () => {
 
         if (Math.abs(train.position % segmentLength) < TRAIN_SPEED) {
           const currentStation = line.stations[currentSegment];
-          
+
           const initialPassengers = train.passengers.length;
           train.passengers = train.passengers.filter(passengerType => {
             if (passengerType === currentStation.type) {
@@ -142,72 +381,19 @@ const Sketch: React.FC = () => {
       });
     };
 
-    const drawTrains = () => {
-      trains.forEach(train => {
-        const line = lines[train.lineIndex];
-        if (!line || line.stations.length < 2) return;
-
-        const segmentLength = 1 / (line.stations.length - 1);
-        const currentSegment = Math.floor(train.position / segmentLength);
-        const segmentPosition = (train.position % segmentLength) / segmentLength;
-        
-        const start = line.stations[currentSegment];
-        const end = line.stations[currentSegment + 1];
-        
-        if (start && end) {
-          const x = lerp(start.x, end.x, segmentPosition);
-          const y = lerp(start.y, end.y, segmentPosition);
-
-          // Draw delivery effect
-          if (train.showDeliveryEffect) {
-            p.noFill();
-            p.stroke(255, 215, 0);
-            p.strokeWeight(2);
-            const effectSize = 30 + p.sin(p.frameCount * 0.2) * 10;
-            p.circle(x, y, effectSize);
-            p.circle(x, y, effectSize * 0.7);
-          }
-
-          // Draw train shadow
-          p.noStroke();
-          p.fill(0, 30);
-          p.ellipse(x + 2, y + 4, 24, 10);
-
-          // Draw train body
-          p.fill(line.color);
-          p.stroke(p.color(p.red(p.color(line.color)) * 0.8, 
-                         p.green(p.color(line.color)) * 0.8, 
-                         p.blue(p.color(line.color)) * 0.8));
-          p.strokeWeight(1);
-          p.rect(x - 10, y - 7, 20, 14, 4);
-
-          // Draw passengers
-          if (train.passengers.length > 0) {
-            p.noStroke();
-            p.fill(40);
-            const passengerWidth = 16 / train.capacity;
-            train.passengers.forEach((type, i) => {
-              p.fill(STATION_COLORS[type]);
-              p.rect(x - 8 + i * passengerWidth, y - 5, passengerWidth - 1, 4, 1);
-            });
-          }
-        }
-      });
-    };
-
     const drawGameInfo = () => {
       // Draw background for UI
       p.fill(255, 240);
       p.noStroke();
       p.rect(0, 0, p.width, 50);
-      
+
       p.fill(40);
       p.noStroke();
       p.textSize(16);
       p.textAlign(p.LEFT, p.CENTER);
       p.text('Day: ' + gameState.day, 20, 25);
       p.text('Score: ' + gameState.score, 120, 25);
-      
+
       // Draw station type legend
       p.textAlign(p.RIGHT, p.CENTER);
       Object.entries(STATION_COLORS).forEach(([type, color], i) => {
@@ -216,11 +402,11 @@ const Sketch: React.FC = () => {
         p.strokeWeight(1);
         if (type === 'circle') p.circle(p.width - 160 + i * 60, 25, 16);
         else if (type === 'square') p.square(p.width - 168 + i * 60, 17, 16);
-        else p.triangle(p.width - 160 + i * 60, 17, 
-                       p.width - 168 + i * 60, 33, 
-                       p.width - 152 + i * 60, 33);
+        else p.triangle(p.width - 160 + i * 60, 17,
+              p.width - 168 + i * 60, 33,
+              p.width - 152 + i * 60, 33);
       });
-      
+
       if (gameState.gameOver) {
         p.fill(0, 0, 0, 150);
         p.rect(0, 0, p.width, p.height);
@@ -234,117 +420,6 @@ const Sketch: React.FC = () => {
         p.textSize(16);
         p.text('Click anywhere to restart', p.width/2, p.height/2 + 60);
       }
-    };
-
-    p.draw = () => {
-      // Draw background pattern
-      p.background(240);
-      for (let x = 0; x < p.width; x += 40) {
-        for (let y = 0; y < p.height; y += 40) {
-          p.image(bgPattern, x, y);
-        }
-      }
-      
-      updateGameState();
-      updateTrains();
-      
-      // Draw lines with subtle glow
-      lines.forEach(line => {
-        // Draw glow
-        p.stroke(p.color(line.color + '80'));
-        p.strokeWeight(8);
-        for (let i = 0; i < line.stations.length - 1; i++) {
-          const current = line.stations[i];
-          const next = line.stations[i + 1];
-          p.line(current.x, current.y, next.x, next.y);
-        }
-        // Draw main line
-        p.stroke(line.color);
-        p.strokeWeight(4);
-        for (let i = 0; i < line.stations.length - 1; i++) {
-          const current = line.stations[i];
-          const next = line.stations[i + 1];
-          p.line(current.x, current.y, next.x, next.y);
-        }
-      });
-
-      // Draw stations
-      stations.forEach(station => {
-        // Draw warning for nearly full stations
-        if (station.passengers >= MAX_PASSENGERS - 2) {
-          p.noFill();
-          p.stroke(255, 0, 0, 128 + p.sin(p.frameCount * 0.1) * 128);
-          p.strokeWeight(2);
-          const warningSize = 40 + p.sin(p.frameCount * 0.1) * 5;
-          p.circle(station.x, station.y, warningSize);
-          p.circle(station.x, station.y, warningSize * 0.7);
-        }
-
-        // Draw station shadow
-        p.noStroke();
-        p.fill(0, 30);
-        p.ellipse(station.x + 2, station.y + 4, 34, 12);
-
-        // Draw station
-        p.strokeWeight(2);
-        p.stroke(40);
-        p.fill(255);
-        
-        switch (station.type) {
-          case 'circle':
-            p.circle(station.x, station.y, 30);
-            break;
-          case 'square':
-            p.rectMode(p.CENTER);
-            p.square(station.x, station.y, 30);
-            break;
-          case 'triangle':
-            p.triangle(
-              station.x, station.y - 15,
-              station.x - 15, station.y + 15,
-              station.x + 15, station.y + 15
-            );
-            break;
-        }
-
-        // Draw station type indicator
-        p.noStroke();
-        p.fill(STATION_COLORS[station.type]);
-        switch (station.type) {
-          case 'circle':
-            p.circle(station.x, station.y, 10);
-            break;
-          case 'square':
-            p.rectMode(p.CENTER);
-            p.square(station.x, station.y, 10);
-            break;
-          case 'triangle':
-            p.triangle(
-              station.x, station.y - 5,
-              station.x - 5, station.y + 5,
-              station.x + 5, station.y + 5
-            );
-            break;
-        }
-
-        // Draw passenger count
-        if (station.passengers > 0) {
-          const fillColor = station.passengers >= MAX_PASSENGERS - 2 ? 
-            p.color(255, 0, 0) : p.color(40);
-          p.fill(255);
-          p.stroke(40);
-          p.strokeWeight(1);
-          p.circle(station.x + 15, station.y - 15, 20);
-          p.noStroke();
-          p.fill(fillColor);
-          p.textAlign(p.CENTER, p.CENTER);
-          p.textSize(12);
-          p.text(station.passengers, station.x + 15, station.y - 15);
-        }
-      });
-
-      drawTrains();
-      drawGameInfo();
     };
 
     // Add passengers randomly
@@ -372,8 +447,8 @@ const Sketch: React.FC = () => {
         return;
       }
 
-      const clickedStation = stations.find(station => 
-        p.dist(p.mouseX, p.mouseY, station.x, station.y) < 20
+      const clickedStation = stations.find(station =>
+          p.dist(p.mouseX, p.mouseY, station.x, station.y) < 20
       );
 
       if (clickedStation) {
@@ -402,13 +477,19 @@ const Sketch: React.FC = () => {
 
       if (lines.length > 0) {
         const currentLine = lines[lines.length - 1];
-        const clickedStation = stations.find(station => 
-          p.dist(p.mouseX, p.mouseY, station.x, station.y) < 20 &&
-          !currentLine.stations.includes(station)
+        const clickedStation = stations.find(station =>
+            p.dist(p.mouseX, p.mouseY, station.x, station.y) < 20 &&
+            !currentLine.stations.includes(station)
         );
 
         if (clickedStation) {
           currentLine.stations.push(clickedStation);
+          // Recalculate control points when adding a new station
+          currentLine.controlPoints = [];
+          for (let i = 0; i < currentLine.stations.length - 1; i++) {
+            const points = calculateControlPoints(currentLine.stations[i], currentLine.stations[i + 1]);
+            currentLine.controlPoints.push(...points);
+          }
         }
       }
     };
